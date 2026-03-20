@@ -187,7 +187,7 @@ async def on_message(msg):
         if len(parts) > 1:
             try:
                 limit = int(parts[1])
-                cmd += ["-m",str(limit)]
+                cmd += ["--after",parts[1]] #i.e sb!export 2026-03-20
             except ValueError:
                 log("error",f"invalid arg '{parts[1]}'")
                 return
