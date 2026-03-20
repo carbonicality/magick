@@ -187,7 +187,7 @@ async def on_message(msg):
         if len(parts) > 1:
             try:
                 limit = int(parts[1])
-                cmd += ["--limit",str(limit)]
+                cmd += ["-m",str(limit)]
             except ValueError:
                 log("error",f"invalid arg '{parts[1]}'")
                 return
@@ -372,10 +372,64 @@ async def on_message(msg):
                 log("warning", f"hit discord.HTTPException-{e}")
                 await asyncio.sleep(2)
         log("info",f"finished spamming {count} times!")
+    
+    #ai, sb!ai
+    if msg.content.lower().startswith(f"{PREFIX}ai"):
+        parts = msg.content.split(maxsplit=1)
+        if len(parts) < 2:
+            await msg.edit(content=f"invalid usage. try {PREFIX}ai <prompt>")
+            await asyncio.sleep(3)
+            await msg.delete()
+            return
+        if not AI_KEY:
+            await msg.edit(content="no AI API key configured.")
+            await asyncio.sleep(3)
+            await msg.delete()
+            return
+        prompt = parts[1]
+        try:
+            await msg.edit(content="thinking...")
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://ai.hackclub.com/proxy/v1/chat/completions",
+                    headers = {
+                        "Authorization": f"Bearer {AI_KEY}",
+                        "Content-Type": "application/json"
+                    },
+                    json = {
+                        "model": "google/gemini-3-flash-preview",
+                        "messages": [{"role":"user","content":prompt}],
+                        "max_tokens": 10000
+                    }
+                ) as resp:
+                    data = await resp.json()
+                    log("info",f"raw ai res {str(data)[:200]}")
+                    if resp.status == 200:
+                        reply = data["choices"][0]["message"]["content"].strip()
+                        reply = reply + "\n-# generated with magick AI"
+                        log("info",f"AI response: \"{reply[:60]}\"")
+                        if len(reply) > 2000:
+                            await msg.edit(content=reply[:1973]+"...\n-#generated with magick AI")
+                        else:
+                            await msg.edit(content=reply)
+                    else:
+                        err = data.get("error",{}).get("message","unknown error")
+                        log("error",f"AI API error: {err}")
+                        await msg.edit(content=f"AI error: {err}")
+        except Exception as e:
+            log("error",f"AI request failed, {e}")
+            await msg.edit(content="AI request failed.")
 
 if __name__=='__main__':
     print("welcome to magick!")
-    
+    print("""
+                          _      __  
+   ____ ___  ____ _____ _(_)____/ /__
+  / __ `__ \/ __ `/ __ `/ / ___/ //_/
+ / / / / / / /_/ / /_/ / / /__/ ,<   
+/_/ /_/ /_/\__,_/\__, /_/\___/_/|_|  
+                /____/               
+    """)
     print("----------------------")
     TOKEN = input("enter discord token > ").strip()
     if not TOKEN:
@@ -393,5 +447,9 @@ if __name__=='__main__':
         exit(1)
     DCE_CLI = f"./DiscordChatExporter{OS_MAP[OS_INPUT]}/DiscordChatExporter.Cli"
     log("info",f"using DCE path: {DCE_CLI}")
+    print()
+    AI_KEY=input("enter hackAI API key (or press enter to skip) > ").strip()
+    if not AI_KEY:
+        log("warning","no AI API key entered, sb!ai will be unavailable")
     print()
     client.run(TOKEN)
