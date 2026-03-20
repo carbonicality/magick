@@ -3,6 +3,7 @@ import asyncio
 import subprocess
 from datetime import datetime
 import os
+import aiohttp
 
 #cfg
 PREFIX = "sb!"
@@ -13,6 +14,9 @@ client = discord.Client()
 
 def log(level, msg):
     print(f"[{level.upper()}] {msg}")
+
+def channel_name(channel):
+    return channel.name if hasattr(channel,'name') else f"DM({channel.recipient})"
 
 async def raw_sdelete(channel_id, msg_id, token):
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages"
@@ -65,7 +69,7 @@ async def on_message(msg):
         else:
             limit = PURGE_LIMIT
         channel = msg.channel
-        log("info",f"purge started in #{channel.name} (ID: {channel.id}), scanning up to {limit} msgs")
+        log("info",f"purge started in #{channel_name(channel)} (ID: {channel.id}), scanning up to {limit} msgs")
         try:
             await msg.delete()
         except discord.HTTPException:
@@ -109,7 +113,7 @@ async def on_message(msg):
             await msg.delete()
         except:
             pass
-        log("info",f"reacting to {limit} messages with {emoji} in #{msg.channel.name}")
+        log("info",f"reacting to {limit} messages with {emoji} in #{channel_name(msg.channel)}")
         count = 0
         async for entry in msg.channel.history(limit = limit):
             try:
@@ -137,7 +141,7 @@ async def on_message(msg):
             except ValueError:
                 emoji = part
         channel = msg.channel
-        log("info",f"removing {'all' if not emoji else emoji} reactions in last {limit} msgs in #{channel.name}")
+        log("info",f"removing {'all' if not emoji else emoji} reactions in last {limit} msgs in #{channel_name(channel)}")
         try:
             await msg.delete()
         except discord.HTTPException:
@@ -170,13 +174,15 @@ async def on_message(msg):
         parts = msg.content.split()
         channel_id = msg.channel.id
         os.makedirs("exports",exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"exports/{channel_name(msg.channel)}_{timestamp}.html"
         cmd = [
-            "./DiscordChatExporterMac/DiscordChatExporter.Cli", # eventually i will add inputs for which os you want to use. for now, add your own discordchatexporter cli and change the file path if needed
+            DCE_CLI,
             "export",
             "-t", TOKEN,
             "-c", str(channel_id),
             "-f", "HtmlDark",
-            "-o", "exports/"
+            "-o", output_filename
         ]
         if len(parts) > 1:
             try:
@@ -185,7 +191,8 @@ async def on_message(msg):
             except ValueError:
                 log("error",f"invalid arg '{parts[1]}'")
                 return
-        log("info",f"exporting #{msg.channel.name}...")
+        log("info",f"exporting #{channel_name(msg.channel)}...")
+        channel = msg.channel
         try:
             await msg.delete()
         except discord.HTTPException:
@@ -193,13 +200,49 @@ async def on_message(msg):
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: subprocess.run(cmd,capture_output=True,text=True)
+            lambda: subprocess.run(cmd, capture_output=True, text=True)
         )
         if result.returncode == 0:
-            log("info",f"export complete, saved to exports/")
+            log("info","export complete, uploading to catbox...")
+            export_file = None
+            if os.path.exists(output_filename):
+                export_file = output_filename
+            else:
+                html_files = [
+                    os.path.join("exports",f) for f in os.listdir("exports")
+                    if f.endswith(".html")
+                ]
+                if html_files:
+                    export_file = max(html_files, key=os.path.getmtime)
+            if not export_file:
+                log("error","export file not found post export")
+                return
+            catbox_url = None
+            try:
+                with open(export_file,"rb") as f:
+                    form = aiohttp.FormData()
+                    form.add_field("reqtype","fileupload")
+                    form.add_field("fileToUpload",f,filename=os.path.basename(export_file),content_type="text/html")
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post("https://catbox.moe/user/api.php",data=form) as resp:
+                            if resp.status == 200:
+                                catbox_url = (await resp.text()).strip()
+                                log("info",f"uploaded to catbox: {catbox_url}")
+                            else:
+                                log("error",f"catbox upload failed with status {resp.status}")
+            except Exception as e:
+                log("error",f"catbox upload error: {e}")
+            if catbox_url:
+                notice = await channel.send(f"export ready: {catbox_url}")
+                await asyncio.sleep(5)
+                await notice.delete()
+            else:
+                notice = await channel.send("export done, catbox upload failed.")
+                await asyncio.sleep(5)
+                await notice.delete()
         else:
-            log("error",f"export failed, {result.stderr.strip()}")
-    
+            log("error", f"export failed: {result.stderr.strip()}")
+
     #timed messages, sb!msgsend
     if msg.content.lower().startswith(f"{PREFIX}msgsend"):
         parts = msg.content.split(maxsplit=2)
@@ -228,7 +271,7 @@ async def on_message(msg):
             await asyncio.sleep(3)
             await msg.delete()
             return
-        log("info",f"scheduled message in #{channel.name} at {parts[1]} ({int(delay)}s from now)")
+        log("info",f"scheduled message in #{channel_name(channel)} at {parts[1]} ({int(delay)}s from now)")
         await msg.delete()
         await asyncio.sleep(delay)
         await channel.send(text)
@@ -285,7 +328,7 @@ async def on_message(msg):
         channel_id = msg.channel.id
         log("action",f"attempting silent delete on {target_id}")
         await msg.delete()
-        ghost_id = await raw_silent_delete(channel_id, target_id, TOKEN)
+        ghost_id = await raw_sdelete(channel_id, target_id, TOKEN)
         if ghost_id:
             try:
                 orig_msg = await msg.channel.fetch_message(int(target_id))
@@ -316,7 +359,7 @@ async def on_message(msg):
             await msg.delete()
         except:
             pass
-        log("info",f"spamming '{phrase[:30]}...' {count} times in #{msg.channel.name}")
+        log("info",f"spamming '{phrase[:30]}...' {count} times in #{channel_name(msg.channel)}")
         for i in range(count):
             try:
                 await msg.channel.send(phrase)
@@ -332,10 +375,23 @@ async def on_message(msg):
 
 if __name__=='__main__':
     print("welcome to magick!")
+    
     print("----------------------")
     TOKEN = input("enter discord token > ").strip()
     if not TOKEN:
         log("error","no token entered. exiting...")
         exit(1)
+    print()
+    print("select OS for DiscordChatExporter:")
+    print(" 1. Linux")
+    print(" 2. Windows")
+    print(" 3. Mac")
+    OS_INPUT = input("enter choice (1/2/3) > ").strip()
+    OS_MAP = {"1": "Linux", "2": "Windows", "3": "Mac"}
+    if OS_INPUT not in OS_MAP:
+        log("error", "invalid OS choice. exiting...")
+        exit(1)
+    DCE_CLI = f"./DiscordChatExporter{OS_MAP[OS_INPUT]}/DiscordChatExporter.Cli"
+    log("info",f"using DCE path: {DCE_CLI}")
     print()
     client.run(TOKEN)
